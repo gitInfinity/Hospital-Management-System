@@ -21,29 +21,6 @@ from passlib.context import CryptContext
 from utils import CryptoManager
 from datetime import datetime
 
-<<<<<<< HEAD
-# Load environment variables
-load_dotenv()
-
-# Suppress bcrypt version warnings (compatibility issue with passlib)
-warnings.filterwarnings('ignore', category=UserWarning, module='passlib')
-
-# Password hashing context - INTEGRITY: Ensures passwords are securely hashed
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# Get database URL from environment
-# SQLite: file-based database, no separate server needed
-# AVAILABILITY: SQLite is embedded, ensuring database is always available
-DB_URL = os.getenv("DB_URL", "sqlite:///hospital.db")
-
-# Create SQLAlchemy engine
-# AVAILABILITY: SQLite provides reliable file-based storage
-engine = create_engine(
-    DB_URL,
-    connect_args={"check_same_thread": False},  # Required for Streamlit multi-threading
-    echo=False  # Set to True for SQL query debugging
-)
-=======
 # Load environment variables (for local dev) and Streamlit secrets (for Cloud)
 load_dotenv()
 
@@ -80,7 +57,6 @@ if DB_URL.startswith("sqlite"):
     )
 else:
     engine = create_engine(DB_URL, echo=False)
->>>>>>> origin/master
 
 # Session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
