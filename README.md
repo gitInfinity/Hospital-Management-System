@@ -1,6 +1,10 @@
 # Hospital Management System
 
+<<<<<<< HEAD
 A production-ready Hospital Management System built with **Streamlit** and **MySQL** that strictly adheres to the **CIA Triad** (Confidentiality, Integrity, Availability) and **GDPR** principles.
+=======
+A production-ready Hospital Management System built with **Streamlit** and **SQLite** (local) or **PostgreSQL** (cloud) that strictly adheres to the **CIA Triad** (Confidentiality, Integrity, Availability) and **GDPR** principles.
+>>>>>>> origin/master
 
 ## 🔒 Security Features
 

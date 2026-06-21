@@ -21,6 +21,7 @@ from passlib.context import CryptContext
 from utils import CryptoManager
 from datetime import datetime
 
+<<<<<<< HEAD
 # Load environment variables
 load_dotenv()
 
@@ -42,6 +43,44 @@ engine = create_engine(
     connect_args={"check_same_thread": False},  # Required for Streamlit multi-threading
     echo=False  # Set to True for SQL query debugging
 )
+=======
+# Load environment variables (for local dev) and Streamlit secrets (for Cloud)
+load_dotenv()
+
+# Use Streamlit secrets if available; fall back to env vars for local runs
+try:
+    import streamlit as st
+    # Load DB_URL – if the secret contains a placeholder (e.g., "your_postgres_connection_string"), fall back to the default SQLite URL.
+    _db_url = st.secrets.get("DB_URL") or os.getenv("DB_URL")
+    if _db_url is None or _db_url.strip().startswith("your_"):
+        DB_URL = "sqlite:///hospital.db"
+    else:
+        DB_URL = _db_url
+    # Load ENCRYPTION_KEY – placeholder values are ignored, real key must be set.
+    _enc_key = st.secrets.get("ENCRYPTION_KEY") or os.getenv("ENCRYPTION_KEY")
+    ENCRYPTION_KEY = None if _enc_key is None or _enc_key.strip().startswith("your_") else _enc_key
+except Exception:
+    # Not running inside Streamlit (e.g., unit tests)
+    DB_URL = os.getenv("DB_URL", "sqlite:///hospital.db")
+    ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+
+# Suppress bcrypt version warnings (compatibility issue with passlib)
+warnings.filterwarnings('ignore', category=UserWarning, module='passlib')
+
+# Password hashing context – INTEGRITY: ensures passwords are securely hashed
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Create SQLAlchemy engine.
+# For SQLite we need a special flag; for other DBs we omit it.
+if DB_URL.startswith("sqlite"):
+    engine = create_engine(
+        DB_URL,
+        connect_args={"check_same_thread": False},  # Required for Streamlit multi‑threading
+        echo=False,
+    )
+else:
+    engine = create_engine(DB_URL, echo=False)
+>>>>>>> origin/master
 
 # Session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

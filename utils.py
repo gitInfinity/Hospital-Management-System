@@ -34,6 +34,7 @@ class CryptoManager:
         CONFIDENTIALITY: Encryption key stored in environment variable,
         not hardcoded in source code.
         """
+<<<<<<< HEAD
         encryption_key = os.getenv("ENCRYPTION_KEY")
         
         if not encryption_key:
@@ -51,12 +52,39 @@ class CryptoManager:
             except Exception:
                 # If key format is wrong, generate a new one
                 # In production, you should handle this more carefully
+=======
+        # Try to pull the key from Streamlit secrets first (cloud) then env vars (local)
+        _key = None
+        try:
+            import streamlit as st
+            _key = st.secrets.get("ENCRYPTION_KEY")
+        except Exception:
+            pass
+        if not _key:
+            _key = os.getenv("ENCRYPTION_KEY")
+        # Guard against placeholder values left in the template
+        if _key is None or (isinstance(_key, str) and _key.strip().startswith("your_")):
+            raise ValueError(
+                "ENCRYPTION_KEY not set (or still a placeholder). "
+                "Generate a proper key and add it to .env or Streamlit secrets."
+            )
+        # At this point _key should be a base64 string
+        if isinstance(_key, str):
+            try:
+                self.cipher = Fernet(_key.encode())
+            except Exception:
+>>>>>>> origin/master
                 raise ValueError(
                     "Invalid ENCRYPTION_KEY format. "
                     "Generate a new key using: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
                 )
         else:
+<<<<<<< HEAD
             self.cipher = Fernet(encryption_key)
+=======
+            # Just in case someone passes bytes directly
+            self.cipher = Fernet(_key)
+>>>>>>> origin/master
     
     def encrypt(self, plaintext: str) -> bytes:
         """
