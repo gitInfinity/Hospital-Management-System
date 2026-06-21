@@ -39,9 +39,8 @@ class CryptoManager:
         try:
             import streamlit as st
             _key = st.secrets.get("ENCRYPTION_KEY")
-        except Exception:
-            # Not running inside Streamlit or secrets unavailable
-            pass
+        except Exception as e:
+            print(f"Error occurred while fetching encryption key from Streamlit secrets: {e}")
 
         if not _key:
             _key = os.getenv("ENCRYPTION_KEY")
