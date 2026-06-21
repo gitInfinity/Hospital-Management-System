@@ -20,36 +20,40 @@ load_dotenv()
 class CryptoManager:
     """
     Encryption manager using Fernet symmetric encryption.
-    
+
     CONFIDENTIALITY: 
     - Encrypts PII before storing in database
     - Decrypts only when authorized (admin role)
     - Uses environment variable for key management (GDPR best practice)
     """
-    
+
     def __init__(self):
         """
         Initialize encryption manager with key from environment.
-        
+
         CONFIDENTIALITY: Encryption key stored in environment variable,
         not hardcoded in source code.
         """
-        # Try to pull the key from Streamlit secrets first (cloud) then env vars (local)
+        # Prefer Streamlit secrets (cloud) then environment variables (local)
         _key = None
         try:
             import streamlit as st
             _key = st.secrets.get("ENCRYPTION_KEY")
         except Exception:
+            # Not running inside Streamlit or secrets unavailable
             pass
+
         if not _key:
             _key = os.getenv("ENCRYPTION_KEY")
+
         # Guard against placeholder values left in the template
         if _key is None or (isinstance(_key, str) and _key.strip().startswith("your_")):
             raise ValueError(
                 "ENCRYPTION_KEY not set (or still a placeholder). "
                 "Generate a proper key and add it to .env or Streamlit secrets."
             )
-        # At this point _key should be a base64 string
+
+        # Initialize Fernet cipher from the provided key
         if isinstance(_key, str):
             try:
                 self.cipher = Fernet(_key.encode())
@@ -59,15 +63,18 @@ class CryptoManager:
                     "Generate a new key using: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
                 )
         else:
-            # Just in case someone passes bytes directly
-            self.cipher = Fernet(_key)
-    
+            # Allow bytes-style keys
+            try:
+                self.cipher = Fernet(_key)
+            except Exception:
+                raise ValueError("Invalid ENCRYPTION_KEY bytes provided.")
+
     def encrypt(self, plaintext: str) -> bytes:
         """
         Encrypt plaintext string to bytes.
-        
+
         CONFIDENTIALITY: Converts sensitive PII to encrypted binary format.
-        
+
         Args:
             plaintext: The string to encrypt
             
@@ -79,48 +86,69 @@ class CryptoManager:
     def decrypt(self, ciphertext: bytes) -> str:
         """
         Decrypt bytes to plaintext string.
-        
+
         CONFIDENTIALITY: Only called for admin users to view actual PII.
-        
+
         Args:
             ciphertext: The encrypted bytes
             
         Returns:
-                    # Prefer Streamlit secrets (cloud) then environment variables (local)
-                    _key = None
-                    try:
-                        import streamlit as st
-                        _key = st.secrets.get("ENCRYPTION_KEY")
-                    except Exception:
-                        # Not running inside Streamlit or secrets unavailable
-                        pass
+            Decrypted string
+        """
+        return self.cipher.decrypt(ciphertext).decode('utf-8')
 
-                    if not _key:
-                        _key = os.getenv("ENCRYPTION_KEY")
 
-                    # Guard against placeholder values left in the template
-                    if _key is None or (isinstance(_key, str) and _key.strip().startswith("your_")):
-                        raise ValueError(
-                            "ENCRYPTION_KEY not set (or still a placeholder). "
-                            "Generate a proper key and add it to .env or Streamlit secrets."
-                        )
+def mask_contact(contact: str) -> str:
+    """
+    Mask contact information for non-admin users.
+    
+    GDPR: Data minimization - show only last 4 digits of contact.
+    
+    Args:
+        contact: The contact string to mask
+        
+    Returns:
+        Masked contact (e.g., "XXX-XXX-1234")
+    """
+    if not contact:
+        return "XXX"
 
-                    # Initialize Fernet cipher from the provided key
-                    if isinstance(_key, str):
-                        try:
-                            self.cipher = Fernet(_key.encode())
-                        except Exception:
-                            raise ValueError(
-                                "Invalid ENCRYPTION_KEY format. "
-                                "Generate a new key using: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
-                            )
-                    else:
-                        # Allow bytes-style keys
-                        try:
-                            self.cipher = Fernet(_key)
-                        except Exception:
-                            raise ValueError("Invalid ENCRYPTION_KEY bytes provided.")
-"""
+    if len(contact) <= 4:
+        return "XXX"
+    
+    # Show only last 4 characters
+    last_four = contact[-4:]
+    masked = "X" * (len(contact) - 4) + last_four
+    
+    # Format phone numbers nicely
+    if "-" in contact:
+        parts = []
+        idx = 0
+        for part in contact.split("-"):
+            part_len = len(part)
+            masked_part = masked[idx:idx+part_len]
+            parts.append(masked_part)
+            idx += part_len + 1  # account for dash
+        return "-".join(parts)
+    
+    return masked
+
+
+def anonymize_name(patient_id: int) -> str:
+    """
+    Generate anonymized name for non-admin users.
+    
+    GDPR: Data anonymization - replace actual name with identifier.
+    
+    Args:
+        patient_id: The patient's ID
+        
+    Returns:
+        Anonymized name (e.g., "ANON_1")
+    """
+    return f"ANON_{patient_id}"
+
+
 def export_audit_logs_to_csv(audit_logs: list) -> str:
     """
     Export audit logs to CSV format.
@@ -148,11 +176,11 @@ def export_audit_logs_to_csv(audit_logs: list) -> str:
         writer.writerow([
             log.id,
             log.user_id,
-            log.user.username if log.user else "N/A",
-            log.role_snapshot,
-            log.action,
-            log.timestamp.strftime("%Y-%m-%d %H:%M:%S") if log.timestamp else "",
-            log.details or ""
+            log.user.username if getattr(log, 'user', None) else "N/A",
+            getattr(log, 'role_snapshot', ''),
+            getattr(log, 'action', ''),
+            log.timestamp.strftime("%Y-%m-%d %H:%M:%S") if getattr(log, 'timestamp', None) else "",
+            getattr(log, 'details', '') or ""
         ])
     
     return output.getvalue()
@@ -187,19 +215,18 @@ def export_patients_to_csv(patients: list, crypto: Optional[CryptoManager] = Non
             contact = crypto.decrypt(patient.contact_encrypted)
         else:
             # GDPR: Non-admins get anonymized data
-            name = anonymize_name(patient.id)
+            name = anonymize_name(getattr(patient, 'id', ''))
             contact = mask_contact(
                 crypto.decrypt(patient.contact_encrypted) if crypto else "XXX-XXX-XXXX"
             )
         
         writer.writerow([
-            patient.id,
+            getattr(patient, 'id', ''),
             name,
             contact,
-            patient.diagnosis or "",
-            patient.created_at.strftime("%Y-%m-%d %H:%M:%S") if patient.created_at else "",
-            patient.updated_at.strftime("%Y-%m-%d %H:%M:%S") if patient.updated_at else ""
+            getattr(patient, 'diagnosis', '') or "",
+            patient.created_at.strftime("%Y-%m-%d %H:%M:%S") if getattr(patient, 'created_at', None) else "",
+            patient.updated_at.strftime("%Y-%m-%d %H:%M:%S") if getattr(patient, 'updated_at', None) else ""
         ])
     
     return output.getvalue()
-
