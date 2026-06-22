@@ -36,6 +36,47 @@ if 'user' not in st.session_state:
     st.session_state['user'] = None
 if 'db_initialized' not in st.session_state:
     st.session_state['db_initialized'] = False
+# Theme session state
+if 'theme' not in st.session_state:
+    st.session_state['theme'] = 'Light'
+
+def get_theme_css(theme):
+    if theme == "Dark":
+        bg_color = "#0e1117"
+        text_color = "#fafafa"
+        secondary_bg = "#262730"
+    else:
+        bg_color = "#ffffff"
+        text_color = "#262730"
+        secondary_bg = "#f0f2f6"
+    css = f"""
+    <style>
+        .stApp {{
+            background-color: {bg_color};
+            color: {text_color};
+        }}
+        .sidebar .sidebar-content {{
+            background-color: {secondary_bg};
+        }}
+        .block-container {{
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+            padding-left: 3rem;
+            padding-right: 3rem;
+        }}
+        h1, h2, h3, h4, h5, h6 {{
+            color: {text_color};
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        }}
+        .stButton>button {{
+            border-radius: 0.5rem;
+        }}
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
+
+
+get_theme_css(st.session_state['theme'])
 
 
 def initialize_database():
@@ -129,26 +170,31 @@ def show_dashboard():
 def show_patient_management():
     """
     Patient Management page with role-based access.
-    
-    CONFIDENTIALITY: 
+
+    CONFIDENTIALITY:
     - Admins see decrypted data
     - Doctors see anonymized data
     - Receptionists see masked data
-    
+
     INTEGRITY: All patient operations are logged.
     """
     st.title("Patient Management")
-    
+
     if not require_login():
         st.warning("Please login to access this page.")
         return
-    
+
     user = get_current_user()
     user_role = user['role']
-    
+
     db = SessionLocal()
     crypto = CryptoManager()
-    
+
+    # Initialize pagination state
+    if 'patient_page' not in st.session_state:
+        st.session_state['patient_page'] = 0
+    PAGE_SIZE = 10
+
     try:
         # INTEGRITY: Log patient list view
         log_audit_action(
@@ -158,42 +204,127 @@ def show_patient_management():
             "VIEW_PATIENTS",
             f"User {user['username']} viewed patient list"
         )
-        
-        # Display patients table
-        st.subheader("Patient List")
-        
+
+        # Fetch all patients
         patients = db.query(Patient).order_by(Patient.created_at.desc()).all()
-        
+
         if not patients:
             st.info("No patients found.")
         else:
-            # Prepare data for display based on role
-            # CONFIDENTIALITY: Role-based data display
+            # Prepare display data based on role
             display_data = []
+            id_to_patient = {}
             for patient in patients:
                 if user_role == "admin":
-                    # Admin sees decrypted data
                     name = crypto.decrypt(patient.name_encrypted)
                     contact = crypto.decrypt(patient.contact_encrypted)
                 else:
-                    # GDPR: Non-admins see anonymized/masked data
                     name = anonymize_name(patient.id)
                     contact = mask_contact(
-                        crypto.decrypt(patient.contact_encrypted)  # Need to decrypt to mask
+                        crypto.decrypt(patient.contact_encrypted)
                     )
-                
                 display_data.append({
                     "ID": patient.id,
                     "Name": name,
                     "Contact": contact,
-                    "Diagnosis": patient.diagnosis or "N/A",
+                    "Diagnosis": patient.diagnosis or "",
                     "Created": patient.created_at.strftime("%Y-%m-%d") if patient.created_at else "",
                     "Updated": patient.updated_at.strftime("%Y-%m-%d") if patient.updated_at else ""
                 })
-            
-            st.dataframe(display_data, use_container_width=True)
-            
-            # Export button
+                id_to_patient[patient.id] = patient
+
+            # Pagination
+            total_items = len(display_data)
+            total_pages = max(1, (total_items + PAGE_SIZE - 1) // PAGE_SIZE)
+            # Ensure page is within bounds
+            if st.session_state['patient_page'] >= total_pages:
+                st.session_state['patient_page'] = 0
+            start_idx = st.session_state['patient_page'] * PAGE_SIZE
+            end_idx = min(start_idx + PAGE_SIZE, total_items)
+            page_data = display_data[start_idx:end_idx]
+
+            # Import pandas locally to avoid hard dependency if not used elsewhere
+            import pandas as pd
+            df = pd.DataFrame(page_data)
+
+            # Determine disabled columns for data_editor
+            disabled = {"ID": True}  # ID cannot be edited
+            if user_role == "doctor":
+                # Doctor cannot edit any fields
+                disabled.update({"Name": True, "Contact": True, "Diagnosis": True})
+            elif user_role == "receptionist":
+                # Receptionist can only edit Diagnosis
+                disabled.update({"Name": True, "Contact": True, "Diagnosis": False})
+            else:  # admin
+                # Admin can edit Name, Contact, Diagnosis (ID already disabled)
+                disabled.update({"Name": False, "Contact": False, "Diagnosis": False})
+
+            # Display editable table
+            edited_df = st.data_editor(
+                df,
+                key="patient_editor",
+                hide_index=True,
+                disabled=disabled,
+                num_rows="fixed"
+            )
+
+            # Detect changes and update database
+            if not edited_df.equals(df):
+                # Find rows that changed
+                for idx in range(len(df)):
+                    original = df.iloc[idx]
+                    edited = edited_df.iloc[idx]
+                    if not original.equals(edited):
+                        patient_id = int(original["ID"])
+                        patient = id_to_patient.get(patient_id)
+                        if patient:
+                            changes_made = False
+                            # Name
+                            if user_role in ["admin", "receptionist"] and original["Name"] != edited["Name"]:
+                                # Receptionist cannot actually edit Name due to disabled, but keep safety
+                                if user_role == "admin":
+                                    patient.name_encrypted = crypto.encrypt(edited["Name"])
+                                    changes_made = True
+                            # Contact
+                            if user_role == "admin" and original["Contact"] != edited["Contact"]:
+                                patient.contact_encrypted = crypto.encrypt(edited["Contact"])
+                                changes_made = True
+                            # Diagnosis
+                            if original["Diagnosis"] != edited["Diagnosis"]:
+                                patient.diagnosis = edited["Diagnosis"] if edited["Diagnosis"] else None
+                                changes_made = True
+                            if changes_made:
+                                patient.updated_at = datetime.now()
+                                db.add(patient)
+                                # Log update
+                                log_audit_action(
+                                    db,
+                                    user['id'],
+                                    user_role,
+                                    "UPDATE_PATIENT",
+                                    f"Updated patient ID {patient_id} via inline edit"
+                                )
+                db.commit()
+                st.success("Changes saved!")
+                # Reset edited flag to avoid re-saving on rerun
+                st.session_state['patient_editor'] = df  # Not strictly needed
+
+            # Pagination controls
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col1:
+                if st.button("❮ Previous", disabled=(st.session_state['patient_page'] == 0)):
+                    st.session_state['patient_page'] -= 1
+                    st.rerun()
+            with col2:
+                st.write(f"Page {st.session_state['patient_page'] + 1} of {total_pages}")
+            with col3:
+                if st.button("Next ❯", disabled=(st.session_state['patient_page'] >= total_pages - 1)):
+                    st.session_state['patient_page'] += 1
+                    st.rerun()
+
+            st.divider()
+
+            # Export button (tucked and clean)
             if st.button("Export Patients to CSV"):
                 csv_content = export_patients_to_csv(patients, crypto, user_role)
                 st.download_button(
@@ -202,162 +333,48 @@ def show_patient_management():
                     file_name=f"patients_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv"
                 )
-        
+
         st.divider()
-        
-        # Patient actions based on role
-        if user_role == "receptionist":
-            st.subheader("Add New Patient")
-            with st.form("add_patient_form"):
-                name = st.text_input("Patient Name *")
-                contact = st.text_input("Contact *")
-                diagnosis = st.text_area("Diagnosis")
-                submit = st.form_submit_button("Add Patient")
-                
-                if submit:
-                    if name and contact:
-                        try:
-                            # CONFIDENTIALITY: Encrypt PII before storing
-                            new_patient = Patient(
-                                name_encrypted=crypto.encrypt(name),
-                                contact_encrypted=crypto.encrypt(contact),
-                                diagnosis=diagnosis if diagnosis else None,
-                                created_at=datetime.now(),
-                                updated_at=datetime.now()
-                            )
-                            db.add(new_patient)
-                            db.commit()
-                            
-                            # INTEGRITY: Log patient creation
-                            log_audit_action(
-                                db,
-                                user['id'],
-                                user_role,
-                                "ADD_PATIENT",
-                                f"Added patient with ID {new_patient.id}"
-                            )
-                            
-                            st.success("Patient added successfully!")
-                            st.rerun()
-                        except Exception as e:
-                            db.rollback()
-                            st.error(f"Error adding patient: {str(e)}")
-                    else:
-                        st.error("Name and Contact are required fields.")
-            
-            st.divider()
-            st.subheader("Edit Patient Diagnosis")
-            with st.form("edit_diagnosis_form"):
-                patient_id = st.number_input("Patient ID", min_value=1, step=1)
-                new_diagnosis = st.text_area("New Diagnosis")
-                submit = st.form_submit_button("Update Diagnosis")
-                
-                if submit:
+
+        # Add New Patient form (inline)
+        st.subheader("Add New Patient")
+        with st.form("add_patient_form", clear_on_submit=True):
+            name = st.text_input("Patient Name *")
+            contact = st.text_input("Contact *")
+            diagnosis = st.text_area("Diagnosis")
+            submit = st.form_submit_button("Add Patient")
+
+            if submit:
+                if name and contact:
                     try:
-                        patient = db.query(Patient).filter(Patient.id == patient_id).first()
-                        if patient:
-                            patient.diagnosis = new_diagnosis if new_diagnosis else None
-                            patient.updated_at = datetime.now()
-                            db.commit()
-                            
-                            # INTEGRITY: Log diagnosis update
-                            log_audit_action(
-                                db,
-                                user['id'],
-                                user_role,
-                                "UPDATE_DIAGNOSIS",
-                                f"Updated diagnosis for patient ID {patient_id}"
-                            )
-                            
-                            st.success("Diagnosis updated successfully!")
-                            st.rerun()
-                        else:
-                            st.error("Patient not found.")
+                        # CONFIDENTIALITY: Encrypt PII before storing
+                        new_patient = Patient(
+                            name_encrypted=crypto.encrypt(name),
+                            contact_encrypted=crypto.encrypt(contact),
+                            diagnosis=diagnosis if diagnosis else None,
+                            created_at=datetime.now(),
+                            updated_at=datetime.now()
+                        )
+                        db.add(new_patient)
+                        db.commit()
+
+                        # INTEGRITY: Log patient creation
+                        log_audit_action(
+                            db,
+                            user['id'],
+                            user_role,
+                            "ADD_PATIENT",
+                            f"Added patient with ID {new_patient.id}"
+                        )
+
+                        st.success("Patient added successfully!")
+                        st.rerun()
                     except Exception as e:
                         db.rollback()
-                        st.error(f"Error updating diagnosis: {str(e)}")
-        
-        elif user_role == "admin":
-            st.subheader("Add New Patient")
-            with st.form("add_patient_form_admin"):
-                name = st.text_input("Patient Name *")
-                contact = st.text_input("Contact *")
-                diagnosis = st.text_area("Diagnosis")
-                submit = st.form_submit_button("Add Patient")
-                
-                if submit:
-                    if name and contact:
-                        try:
-                            # CONFIDENTIALITY: Encrypt PII before storing
-                            new_patient = Patient(
-                                name_encrypted=crypto.encrypt(name),
-                                contact_encrypted=crypto.encrypt(contact),
-                                diagnosis=diagnosis if diagnosis else None,
-                                created_at=datetime.now(),
-                                updated_at=datetime.now()
-                            )
-                            db.add(new_patient)
-                            db.commit()
-                            
-                            # INTEGRITY: Log patient creation
-                            log_audit_action(
-                                db,
-                                user['id'],
-                                user_role,
-                                "ADD_PATIENT",
-                                f"Added patient with ID {new_patient.id}"
-                            )
-                            
-                            st.success("Patient added successfully!")
-                            st.rerun()
-                        except Exception as e:
-                            db.rollback()
-                            st.error(f"Error adding patient: {str(e)}")
-                    else:
-                        st.error("Name and Contact are required fields.")
-            
-            st.divider()
-            st.subheader("Edit Patient (Admin)")
-            with st.form("edit_patient_form_admin"):
-                patient_id = st.number_input("Patient ID", min_value=1, step=1)
-                new_name = st.text_input("New Name")
-                new_contact = st.text_input("New Contact")
-                new_diagnosis = st.text_area("New Diagnosis")
-                submit = st.form_submit_button("Update Patient")
-                
-                if submit:
-                    try:
-                        patient = db.query(Patient).filter(Patient.id == patient_id).first()
-                        if patient:
-                            if new_name:
-                                patient.name_encrypted = crypto.encrypt(new_name)
-                            if new_contact:
-                                patient.contact_encrypted = crypto.encrypt(new_contact)
-                            if new_diagnosis:
-                                patient.diagnosis = new_diagnosis
-                            patient.updated_at = datetime.now()
-                            db.commit()
-                            
-                            # INTEGRITY: Log patient update
-                            log_audit_action(
-                                db,
-                                user['id'],
-                                user_role,
-                                "UPDATE_PATIENT",
-                                f"Updated patient ID {patient_id}"
-                            )
-                            
-                            st.success("Patient updated successfully!")
-                            st.rerun()
-                        else:
-                            st.error("Patient not found.")
-                    except Exception as e:
-                        db.rollback()
-                        st.error(f"Error updating patient: {str(e)}")
-        
-        elif user_role == "doctor":
-            st.info("👨‍⚕️ Doctors can view patient information but cannot add or edit patients.")
-    
+                        st.error(f"Error adding patient: {str(e)}")
+                else:
+                    st.error("Name and Contact are required fields.")
+
     except Exception as e:
         st.error(f"Error loading patient data: {str(e)}")
     finally:
@@ -446,7 +463,7 @@ def main():
                 ["Dashboard", "Patient Management", "Audit Logs"],
                 index=0
             )
-            
+
             st.divider()
             user = get_current_user()
             if user:
@@ -454,6 +471,12 @@ def main():
                 st.write(f"Role: **{user['role'].upper()}**")
                 if st.button("Logout"):
                     logout()
+
+            st.divider()
+            theme_choice = st.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state['theme']=="Light" else 1)
+            if theme_choice != st.session_state['theme']:
+                st.session_state['theme'] = theme_choice
+                st.rerun()
         
         # Route to appropriate page
         if page == "Dashboard":
